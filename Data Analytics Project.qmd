@@ -1,0 +1,668 @@
+---
+title: "DAT-3113 PROJECT"
+subtitle: "Hospital West"
+author: "Luke Stucky"
+date: "12/3/2023"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: false
+toc: false
+toc-location: left
+number-sections: false
+editor: source
+---
+
+## INTRODUCTION
+
+In this project, we'll be working as public policy analysts for Senator James Lankford, focusing on healthcare quality and patient safety, particularly regarding hospital-acquired infections. Our goal is to understand how hospital safety impacts patients' perception of care quality and whether this perception varies based on the size of the hospital.\
+
+## PART A: DATASET
+
+### Importing Dataset
+
+```{r}
+# Import data set and rename
+load("C:/Users/ltstu/Downloads/Hospital_West.RData")
+mydata <- Hospital_West
+```
+
+### Summarizing Data Before Wrangling, Munging, and Preparation
+
+#### Summarizing Data
+```{r}
+# Code snippet from ChatGPT, December 2, 2023
+library(skimr)
+library(dplyr)
+
+# Create a summary table for multiple variables
+summary_table <- mydata %>%
+  select(CLABSI_Device_Days, CLABSI_Cases, CLABSI_National_Compare,
+         cdiff_Patient_Days, cdiff_Cases, cdiff_National_Compare,
+         total_payments_received, total_discharges, cms_risk_score,
+         nbr_stars_overall) %>%
+  skim()
+  
+filtered_summary_table <- summary_table %>%
+  dplyr::select(-contains("p0"), -contains("p25"), -contains("complete_rate"), -contains("p75"), -contains("p100"), -contains("hist"))
+
+
+print(filtered_summary_table)
+```
+
+After importing the data set, I found that there are many missing values at first glance. Then when looking closer, I found that there are some hospitals with just a couple missing values, others with many, and even some that had all missing values. On average, excluding the missing variables, western hospitals had better infection rates than the national average in both cdiff and CLABSI. The average star rating was 3.19 while a rating of 3 was the median.\
+
+## PART B: DATA WRANGLING, MUNGING, AND PREPARATION
+
+This is the section for all of the data transformation and preparation so that proper analyses can be conducted.\
+
+### Removing useless data
+
+```{r, results='hide'}
+# Remove all hospitals that did not turn in any data
+# Partial help from ChatGPT, October 9, 2023
+missing_columns <- rowSums(is.na(mydata[, c(
+  "CLABSI_Device_Days",
+  "CLABSI_Cases",
+  "cdiff_Patient_Days",
+  "cdiff_Cases",
+  "CLABSI_National_Compare",
+  "cdiff_National_Compare",
+  "total_payments_received",
+  "total_discharges",
+  "cms_risk_score",
+  "nbr_stars_overall"
+)])) == 10
+
+hospitals_with_all_missing <- mydata[missing_columns, ]
+
+dim(hospitals_with_all_missing)
+
+rows_to_remove <- rownames(hospitals_with_all_missing)
+
+mydata <- mydata[!(rownames(mydata) %in% rows_to_remove), ]
+
+# Removed unnecessary variables
+mydata <- mydata[, !(names(mydata) %in% c("facility_id", "start_date", "end_date"))]
+```
+
+In this section, I found all the hospitals that did not turn in any data and removed them. This totaled out to be 118 hospitals out of the 940 starting variables. I then removed any variables that would not be useful for the rest of the project.\
+
+### Imputing for missing variables
+
+```{r, results='hide'}
+# Replacing the rest of the missing values
+# Partial help from ChatGPT, October 9, 2023
+# CLABSI_Device_Days
+# mean imputation
+mydata$CLABSI_Device_Days[is.na(mydata$CLABSI_Device_Days)] <- mean(mydata$CLABSI_Device_Days, na.rm = TRUE)
+# CLABSI_Cases
+# mean imputation
+mydata$CLABSI_Cases[is.na(mydata$CLABSI_Cases)] <- mean(mydata$CLABSI_Cases, na.rm = TRUE)
+# CLABSI_National_Compare
+# mode imputation
+mode_clabsi <- as.numeric(names(sort(table(mydata$CLABSI_National_Compare), decreasing = TRUE)[1]))
+mydata$CLABSI_National_Compare[is.na(mydata$CLABSI_National_Compare)] <- mode_clabsi
+# cdiff_Patient_Days
+# mean imputation
+mydata$cdiff_Patient_Days[is.na(mydata$cdiff_Patient_Days)] <- mean(mydata$cdiff_Patient_Days, na.rm = TRUE)
+# cdiff_Cases
+# mean imputation
+mydata$cdiff_Cases[is.na(mydata$cdiff_Cases)] <- mean(mydata$cdiff_Cases, na.rm = TRUE)
+# cdiff_National_Compare
+# mode imputation
+mode_cdiff <- as.numeric(names(sort(table(mydata$cdiff_National_Compare), decreasing = TRUE)[1]))
+mydata$cdiff_National_Compare[is.na(mydata$cdiff_National_Compare)] <- mode_cdiff
+# total_payments_received
+# mean imputation
+mydata$total_payments_received[is.na(mydata$total_payments_received)] <- mean(mydata$total_payments_received, na.rm = TRUE)
+# total_discharges
+# mean imputation
+mydata$total_discharges[is.na(mydata$total_discharges)] <- mean(mydata$total_discharges, na.rm = TRUE)
+# cms_risk_score
+# mean imputation
+mydata$cms_risk_score[is.na(mydata$cms_risk_score)] <- mean(mydata$cms_risk_score, na.rm = TRUE)
+# nbr_stars_overall
+# remove because it is dependent
+mydata <- mydata[!is.na(mydata$nbr_stars_overall), ]
+```
+
+In this section, I used different imputation methods to replace the rest of the NAs in the data set. I incorporated mean imputation, mode imputation, and removed cases with dependent variables.\
+
+### Creating the variable for Hospital Size
+
+```{r, results='hide'}
+# Partial help from ChatGPT, November 8, 2023
+# Define the number of clusters (you can experiment with different numbers)
+set.seed(1)
+sizeclusters <- 3
+
+# Perform k-means clustering based on total_discharges
+clusters <- kmeans(mydata$total_discharges, centers = sizeclusters)
+
+# Create categorical variable based on clustering results
+mydata$Hospital_Size <- as.factor(clusters$cluster)
+levels(mydata$Hospital_Size) <- c("Large", "Medium", "Small")  # Renaming the clusters
+
+#table(mydata$Hospital_Size)
+```
+
+Using clustering to identify three clusters of discharges, the variable hospital size is created.\
+
+### Creating a new dataset for states
+
+```{r, results='hide'}
+# Separate by state
+# Code snippet from ChatGPT, October 11, 2023
+library(dplyr)
+aggregated_data <- mydata %>%
+  group_by(mydata$state) %>%
+  summarize_if(is.numeric, mean)
+names(aggregated_data)[names(aggregated_data) == "mydata$state"] <- "state"
+aggregated_data
+```
+
+In this section, I created a new dataset separating the data by individual states. This allows for better visualization of different variables.\
+
+## PART C: SUMMARY MEASURES AND DATA VISUALIZATION
+
+### Summary Measures
+
+For ratio and interval data, include the complete set of summary measures, including skewness and kurtosis.\
+Use tables and other methods to show categorical variables.\
+###Installing package
+
+```{r}
+library(psych)
+library(knitr)
+```
+
+Using the psych package allows for the describe function to work.\
+
+### Function to find mode
+
+```{r}
+# Code snippet from ChatGPT, November 27, 2023
+findmode <- function(x) {
+  tab <- table(x)
+  maxfreq <- max(tab)
+  modes <- as.numeric(names(tab[tab == maxfreq]))
+  return(list(value = modes, frequency = maxfreq))
+}
+```
+
+### CLABSI Summary
+
+```{r}
+# CLABSI Device Days Summary
+kable(describe(mydata$CLABSI_Device_Days))
+findmode(mydata$CLABSI_Device_Days)
+cat("IQR :", IQR(mydata$CLABSI_Device_Days), "\n")
+cat("Variability :", var(mydata$CLABSI_Device_Days))
+```
+
+CLABSI Device Days shows a mean of 5659, a median of 3297, and a mode of 4725. The IQR is 6315 which shows where 50% of the data lies. There is an extremely high standard deviation which means that on average, a value is far from the mean. It has a high positive skew of 3.2 which means that there is a significant amount of values above the mean and it is positively skewed. The kurtosis is 17.29 which shows that it is heavily peaked.\
+
+```{r}
+# CLABSI Cases Summary
+kable(describe(mydata$CLABSI_Cases))
+findmode(mydata$CLABSI_Cases)
+cat("IQR :", IQR(mydata$CLABSI_Cases), "\n")
+cat("Variability :", var(mydata$CLABSI_Cases))
+```
+
+CLABSI Cases shows a mean of 4.78, a median of 2, and a mode of 0. With a standard deviation of 8.16, a selected value is usually off by +/- 8.16 from the mean of 4.78. It has a skewness of 3.71 and a kurtosis value of 17.69 which show that it is positively skewed and it is highly peaked.\
+
+```{r}
+# CLABSI National Comparison Summary
+kable(describe(mydata$CLABSI_National_Compare))
+findmode(mydata$CLABSI_National_Compare)
+cat("IQR :", IQR(mydata$CLABSI_National_Compare), "\n")
+cat("Variability :", var(mydata$CLABSI_National_Compare))
+```
+
+CLABSI National Comparison shows a mean of .025, a median of 0, and a mode of 0. The frequency of 0 is 499 times which explains why the mean is so close to 0.\
+
+### cdiff Summary
+
+```{r}
+# cdiff Patient Days Summary
+kable(describe(mydata$cdiff_Patient_Days))
+findmode(mydata$cdiff_Patient_Days)
+cat("IQR :", IQR(mydata$cdiff_Patient_Days), "\n")
+cat("Variability :", var(mydata$cdiff_Patient_Days))
+```
+
+Cdiff Patient Days shows a mean of 42634.13 and a median of 30992. With a mean higher than the median, it is positively skewed. After viewing the skewness of 1.75, this is proven to be true.\
+
+```{r}
+# cdiff Cases Summary
+kable(describe(mydata$cdiff_Cases))
+findmode(mydata$cdiff_Cases)
+cat("IQR :", IQR(mydata$cdiff_Cases), "\n")
+cat("Variability :", var(mydata$cdiff_Cases))
+```
+
+Cdiff Cases shows a mean of 12.4 and a median value of 7. This means that the hospitals with more than 7 cases have a large number of cases. This also explains why the skewness is 3.22 or positively skewed.\
+
+```{r}
+# cdiff National Comparison Summary
+kable(describe(mydata$cdiff_National_Compare))
+findmode(mydata$cdiff_National_Compare)
+cat("IQR :", IQR(mydata$cdiff_National_Compare), "\n")
+cat("Variability :", var(mydata$cdiff_National_Compare))
+```
+
+The cdiff National Comparison shows a mean of 0.57, a median of 1, and a mode of 1. The frequency of 1 is 328 which shows that a greater percentage of hospitals in the west have below average cdiff cases.\
+
+### Total Payments Summary
+
+```{r}
+# Total Payments Received Summary
+kable(describe(mydata$total_payments_received))
+findmode(mydata$total_payments_received)
+cat("IQR :", IQR(mydata$total_payments_received), "\n")
+cat("Variability :", var(mydata$total_payments_received))
+```
+
+Total payments shows a mean of 43885093 and a median of 32262133. The IQR is 38220855 meaning that 50 % of the data lay within that range. The extremely high kurtosis value of 36.11 indicates an extreme distribution.\
+
+### Total Discharges Summary
+
+```{r}
+# Total Discharges Summary
+kable(describe(mydata$total_discharges))
+findmode(mydata$total_discharges)
+cat("IQR :", IQR(mydata$total_discharges), "\n")
+cat("Variability :", var(mydata$total_discharges))
+```
+
+Total Discharges shows a mean of 2059.76 and a median of 1704 which identify the central tendency of the discharges.The high kurtosis value of 9.46 suggests a more extreme distribution.\
+
+### cms Risk Score Summary
+
+```{r}
+# cms Risk Score Summary
+kable(describe(mydata$cms_risk_score))
+findmode(mydata$cms_risk_score)
+cat("IQR :", IQR(mydata$cms_risk_score), "\n")
+cat("Variability :", var(mydata$cms_risk_score))
+```
+
+Cms Risk Score shows a mean of 2.04 and a median of 2.03 meaning that the mean is extremely close to the center. The variance of 0.22 indicates that the values hover pretty closely to the mean. It has a skewness of 0.67 which means that it is skewed to the right slightly, and it has a kurtosis value of 1.02 which indicates slight peakedness.\
+
+### nbr Stars Overall Summary
+
+```{r}
+# nbr Stars Overall Summary
+kable(describe(mydata$nbr_stars_overall))
+findmode(mydata$nbr_stars_overall)
+cat("IQR :", IQR(mydata$nbr_stars_overall), "\n")
+cat("Variability :", var(mydata$nbr_stars_overall))
+```
+
+Nbr Stars Overall shows a mean of 3.19, a median of 3. The value 3 occurs 236 times and the majority is 3 and above which explains the above average rating of 3.19. Assuming that the average rating for a hospital is 3, hospitals in the west are rated higher on average.\
+
+### Data Visualization
+
+Data visualization is used to help understand the data and see trends between different variables.\
+
+### Contingency Tables
+
+### CLABSI National Comparison to nbr stars overall
+
+```{r}
+# Contingency Table For CLABSI National Compare
+table(mydata$nbr_stars_overall, mydata$CLABSI_National_Compare)
+```
+
+Three starts are most common and the majority of them come from hospital with average CLABSI cases. There are barely any one star and five star ratings and the majority of them also come from hospitals with average CLABSI cases.\
+
+### cdiff National Comparison to nbr stars overall
+
+```{r}
+# Contingency table for cdiff national compare
+table(mydata$nbr_stars_overall, mydata$cdiff_National_Compare)
+```
+
+The contingency table for cdiff national comparison and nbr stars overall shows the majority of the ratings being three star. The majority of five star hospitals were above average in national case comparison. One hospital that got a five star rating had a below average national case comparison. There were few total one and two star hospitals.\
+
+### Stacked Bar Chart
+
+```{r}
+# Turn on packages
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+#Partial help from ChatGPT, October 11, 2023
+stackedbar <- aggregated_data %>%
+  group_by(state) %>%
+  summarise(cdiff_Count = sum(cdiff_Cases),
+            CLABSI_Count = sum(CLABSI_Cases)) %>%
+  pivot_longer(cols = -state, names_to = "Disease", values_to = "Count") %>%
+  ggplot(aes(x = state, y = Count, fill = Disease)) +
+  geom_bar(position = "stack", stat = "identity") +
+  labs(x = "State", y = "Disease Count", title = "Disease Counts by State", caption = "Add Citation") +
+  scale_fill_manual(values = c("lightblue", "lightpink"), labels = c("cdiff Cases", "CLABSI Cases"), name = "Disease") +
+  theme_minimal()
+
+print(stackedbar)
+```
+
+This stacked bar chart analyzes the number of both cdiff and CLABSI cases in each state in the west. From the chart, a few conclusions can be drawn. The more populated states typically have more cases and the less have fewer. Hawaii is a remote state and it has the most cdiff cases.\
+
+```{r}
+# Partial help from ChatGPT, November 13, 2023
+# CLABSI average days per star rating
+mydata <- mydata %>%
+  mutate(CLABSI_Device_Days_Per_Case = ifelse(CLABSI_Cases == 0, 0, CLABSI_Device_Days / pmax(CLABSI_Cases, 1)))
+
+average_CLABSI <- mydata %>%
+  group_by(nbr_stars_overall) %>%
+  summarise(avg_CLABSI_Device_Days_Per_Case = mean(ifelse(CLABSI_Cases == 0, 0, CLABSI_Device_Days / pmax(CLABSI_Cases, 1))))
+
+
+# cdiff average days per star rating
+mydata <- mydata %>%
+  mutate(cdiff_Patient_Days_Per_Case = ifelse(cdiff_Cases == 0, 0, cdiff_Patient_Days / pmax(cdiff_Cases, 1)))
+
+average_cdiff <- mydata %>%
+  group_by(nbr_stars_overall) %>%
+  summarise(avg_cdiff = mean(ifelse(cdiff_Cases == 0, 0, cdiff_Patient_Days / pmax(cdiff_Cases, 1))))
+
+# Dodged Bar Chart
+library(tidyr)
+combined_data <- bind_rows(
+  mutate(average_CLABSI, Disease = "CLABSI"),
+  mutate(average_cdiff, Disease = "cdiff")
+) %>%
+  gather(key = "Rating_Type", value = "Average_Device_Days_Per_Case", -nbr_stars_overall, -Disease)
+
+# Dodged bar chart
+Dodged <- ggplot(data = combined_data, aes(x = factor(nbr_stars_overall), y = Average_Device_Days_Per_Case, fill = Disease)) +
+  geom_bar(position = "dodge", stat = "identity", width = 0.7) +
+  labs(x = "Star Rating", y = "Average Device Days Per Case",
+       title = "Average Device Days Per Case by Star Rating",
+       fill = "Disease Type",
+       caption = "Add Citation") +
+  scale_fill_manual(values = c("CLABSI" = "lightpink", "cdiff" = "lightblue")) + 
+  theme_minimal()
+
+# Print the plot
+print(Dodged)
+```
+
+Creating a dodged bar chart looking at stars overall and the average days for each disease, There is a negative slope which is expected. The greater number of days in the hospital, the lower the star rating.\
+
+### Density Plot
+
+```{r}
+# Code snippet from ChatGPT, December 2, 2023
+ggplot(mydata, aes(x = nbr_stars_overall, fill = Hospital_Size)) +
+  geom_density(alpha = .5) +
+  labs(title = "Quality Perception Distribution by Hospital Size",
+       x = "Quality Perception",
+       y = "Density") +
+  theme_minimal()
+```
+
+Creating a density plot enabled viewing if the quality perception of hospitals varied by size of hospital hospital. In interpreting the plot, there appears to be a trend. The higher star ratings are more common for medium sized hospitals, and the lower star ratings are more common for the small hospitals.\
+
+### Histogram
+
+```{r}
+# Histogram
+library(ggplot2)
+
+# Create a histogram using specified bins
+ggplot(mydata, aes(x = total_discharges)) +
+  geom_histogram(binwidth = 900, boundary = 0, fill = "blue", color = "black") +
+  labs(title = "Histogram of Hospital Size",
+       x = "Total Discharges",
+       y = "Number of Hospitals") +
+  theme_minimal()
+```
+
+The graph shows a negative slope. The number of discharges is typically small for the majority of hospitals. There is an outlier that is different by 5000 discharges.\
+
+### Bar Charts
+
+```{r}
+# Partial help from ChatGPT, November 13, 2023
+# State Risk Score
+library(ggplot2)
+
+ggplot(aggregated_data, aes(x = state, y = cms_risk_score)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(x = "States", y = "Risk Score", title = "Risk Score by State") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  coord_cartesian(ylim = c(1.5, max(aggregated_data$cms_risk_score)))
+# State Stars
+library(ggplot2)
+
+ggplot(aggregated_data, aes(x = state, y = nbr_stars_overall)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(x = "States", y = "Stars", title = "Stars by State") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  coord_cartesian(ylim = c(1.5, max(aggregated_data$nbr_stars_overall)))
+```
+
+When breaking the risk score and the stars down by state, bar charts can be created for insights. At first glance, it appears that there is negative correlation between the two, which is expected. Seeing this visualization, it will be important to check for correlation later.
+
+### Scatterplot
+
+```{r}
+library(ggplot2)
+plot <- ggplot(data=aggregated_data, mapping=aes(x=cms_risk_score, y=total_discharges, color=nbr_stars_overall,)) 
+  plot + geom_point(alpha=0.5, size=5) +
+  labs(title = "Risk Score to Discharges")
+
+```
+
+Using the aggregated data to compare risk score and discharges, a scatterplot can be created to view the relationship. A positive slope is expected as the number of discharges should increase with a higher risk score. This is exactly what appears after the creation of the scatterplot. By adding in the color changing based on star rating, it can be observed that typically, the lower the risk score, the higher the star rating.\
+
+### Heat Map
+
+```{r}
+library(DataExplorer)
+correlationdata <- mydata[, c("CLABSI_National_Compare", "cdiff_National_Compare", "total_payments_received", "total_discharges", "cms_risk_score", "nbr_stars_overall", "CLABSI_Device_Days_Per_Case", "cdiff_Patient_Days_Per_Case"),]
+plot_correlation(correlationdata, type = "continuous")
+
+cor(mydata$nbr_stars_overall, mydata$cms_risk_score)
+```
+
+Running a heat map for correlation allows for contributing factors to star ratings to be identified. The first observation that is heavily correlated is payments and discharges, which makes sense, but is not useful. The correlation between star rating and risk score is negatively correlated by -0.5. This shows that as the risk score goes up, the star rating typically goes down.\
+
+## PART D: ANALYTIC MODELS
+
+#### Clustering
+
+Clustering analysis is important for analytic modeling as it allows for patterns to be discovered and predictions to be made.\
+
+```{r}
+# Partial help from ChatGPT, November 15, 2023
+# Run Packages
+library(factoextra)
+library(cluster)
+library(dplyr)
+
+# Scale
+df <- scale(mydata[ ,c(4:7, 10:12)])
+# Determining Number of Clusters
+fviz_nbclust(df, kmeans, method = "wss")
+# k means clustering algorithm
+set.seed(1)
+km <- kmeans(df, 4)
+# size
+km$size
+# separation
+plot(as.data.frame(df), col=km$cluster)
+points(km$centers, col=1:7, pch=8, cex=2) 
+# Plot the clusters
+factoextra::fviz_cluster(km, data = df)
+# Profile Data
+library(GGally)
+centroids <- data.frame(km$centers)
+centroids['Cluster'] = paste('Cluster', seq(1, 4))  # Sequence for the number of CLUSTERS
+p <- ggparcoord(centroids, columns=1:7,             # Change group based on the number of INPUT VARS VARIABLES
+								groupColumn='Cluster',   
+								showPoints=TRUE) +
+	   scale_color_discrete() + 
+	   labs(x='Variable', y='Value')
+p + geom_line(size = 1.5)
+# Append Data into original
+all <- cbind(cluster=km$cluster, mydata) 
+appended <- all %>% 
+	     group_by(cluster) %>% 
+	     summarize(N=n(), 
+	     					 xCLABSI_Device_Days = mean(CLABSI_Device_Days),
+	     					 xCLABSI_Cases = mean(CLABSI_Cases),
+	     					 xcdiff_Patient_Days = mean(cdiff_Patient_Days),
+	     					 xcdiff_Cases = mean(cdiff_Cases),
+	     					 xtotal_payments_received = mean(total_payments_received),
+	     					 xtotal_discharges = mean(total_discharges),
+	     					 xcms_risk_score = mean(cms_risk_score)
+	     					 )
+appended
+```
+
+After scaling the data, it is observed that 4 clusters would be most beneficial. The cluster plot shows four fairly distinct sections that will be useful for predictive analysis.By profiling the data, the centers can be observed. This shows the distinction between each of the clusters. There is a little overlap that can be observed. After appending the data, it appears that the large hospitals have a high values of everything and the small hospitals have lower values. The two clusters in the middle are fairly similar besides the risk score which varies.\
+
+#### Regression
+
+The regression analysis will be useful for checking the relationship between the variables. It will help determine which relationships matter and which do not.\
+
+```{r}
+options(scipen = 9999)  # avoids scientific notation
+
+library(tidyverse)
+library(readxl)
+
+# Preparation
+# Hospital Size Binaries 
+mydata$MediumSize <- ifelse(mydata$Hospital_Size == "Medium", 1, 0)
+mydata$LargeSize  <- ifelse(mydata$Hospital_Size == "Large", 1, 0)
+
+# Comparison Binaries 
+mydata$AboveAverageCLABSI <- ifelse(mydata$CLABSI_National_Compare == "-1",1,0)
+mydata$BelowAverageCLABSI <- ifelse(mydata$CLABSI_National_Compare == "1",1,0)
+
+mydata$BelowAveragecdiff <- ifelse(mydata$cdiff_National_Compare == "-1", 1, 0)
+mydata$AboveAveragecdiff  <- ifelse(mydata$cdiff_National_Compare == "1", 1, 0)
+
+# Linear Model
+multivarmodel <- lm(nbr_stars_overall ~ CLABSI_Device_Days + CLABSI_Cases + cdiff_Patient_Days + cdiff_Cases + total_discharges + cms_risk_score + CLABSI_Device_Days_Per_Case + cdiff_Patient_Days_Per_Case + BelowAverageCLABSI + AboveAverageCLABSI + BelowAveragecdiff + AboveAveragecdiff,
+                    data = mydata)
+
+# Code snippet from ChatGPT, November 13, 2023
+# Stepwise Regression
+stepwise_model <- step(multivarmodel)
+
+# Display the summary of the final model
+summary(stepwise_model)
+```
+
+Through running the regression model, 32.76% of the variability in the star rating can be explained. The null hypothesis of the model is that all the coefficients in the model are equal to zero, and therefore do not affect the star rating. This can be rejected with the low p-value indicating that there is a variable contributing to the change in stars. On average, the model is off by +/- .144 stars. With every one unit increase in cms risk score, the star rating goes down by -0.875.\
+
+## PART E: ETHICAL IMPLICATIONS
+
+When dealing with hospital data, it is important to look at the ethical considerations to ensure responsible and transparent data science practices. It is crucial to address the ethical implications that may arise during the collection, analysis, and interpretation of hospital data. Data scientists must adhere to ethical guidelines and principles to protect both themselves and the clients involved. Rule 8 part a of Data Science Ethics puts an emphasis on transparency. Data scientists are obliged to inform the client about all data science results and material facts, regardless of whether they are good or bad. This ensures that clients are equipped with the necessary information to make informed decisions based on the findings of the data analysis.
+
+The quality of data is a crucial ethical consideration in data science. Rule 8 part b emphasizes that data scientists should assess the data, rate it, and disclose that information to the customer. This practice is essential for maintaining the integrity of the analysis and ensuring that the client understands the reliability and usefulness of the data used. Rule 8 part j discourages data scientists from engaging in cherry-picking, which is the selective use of data to support a particular conclusion while ignoring contradictory data. This barrier reinforces the commitment to objectivity and unbiased analysis, promoting ethical practices in data analysis. By following ethical standards, data scientists ensure transparency and reliability in their work, fostering trust and credibility.\
+
+## CONCLUSIONS
+
+In this project, we worked with hospital data to understand how hospital safety impacts patients' perception of care quality and whether this perception varies based on the size of the hospital. After running summary measures, visualizations, and analytic models, it was concluded that there was a relationship between perception of care quality and hospital safety. Specifically, the cms risk score was moderately correlated to the hospital stars. It was then found that the disease level decreased with the higher care quality. To give Senator Lankford an answer on what to do, he should focus on lowering the risk scores of hospitals to elevate the hospital star ratings.
+
+The second part of Senator Lankford's question dealt with whether the perception of care quality varied by hospital size. After running a density plot, it was discovered that there was a pattern in the hospital size. The medium size hospitals had a higher quality perception and the small hospitals had a lower quality perception. This observation may be a trend for the west, but it is not the same throughout the nation. After comparing with other members of the group, it was discovered that their results showed the opposite, where medium hospitals had the low quality perception. So to give Senator Lankford an answer for his second question, there are trends in different sections of the nation, but not one nationwide trend.\
+
+## REFERENCES
+
+Here is useful code to get R, RStudio, and R packages citations.\
+Remember to also cite your data source using the html and any other citations required by that source.\
+
+```{r, echo=FALSE}
+# Citation for R including the version
+one <- print(citation(), style = "textVersion")  # this is the citation for R
+cite.version <- R.Version()
+pip <- as.character(cite.version$version.string)
+cat("Version", pip, "\n")
+cat("  \n")
+
+
+# knitr
+print("Xie, Y. (2022). knitr: A General-Purpose Package for Dynamic Report Generation in R. R package version 1.43. URL: https://cran.r-project.org/package=knitr")
+
+# skimr
+print("Mcnamara, A., Arino De La Rubia, E., & Quinn, M. (2022). skimr: Compact and flexible summaries of data. R package version 2.1.5. URL: https://cran.r-project.org/package=skimr")
+
+# psych
+print("Revelle, W. (2022). psych: Procedures for Psychological, Psychometric, and Personality Research. R package version 2.3.6. URL: https://cran.r-project.org/package=psych")
+
+# readxl
+print("Wickham, H., & Bryan, J. (2022). readxl: Read Excel Files. R package version 1.4.3. URL: https://cran.r-project.org/package=readxl")
+
+# lubridate
+print("Grolemund, G., & Wickham, H. (2011). Dates and Times Made Easy with lubridate. Journal of Statistical Software, 40(3), 1-25. R package version 1.9.2. URL: https://cran.r-project.org/package=lubridate")
+
+# forcats
+print("Wickham, H. (2022). forcats: Tools for Working with Categorical Variables (Factors). R package version 1.0.0. URL: https://cran.r-project.org/package=forcats")
+
+# stringr
+print("Wickham, H. (2022). stringr: Simple, Consistent Wrappers for Common String Operations. R package version 1.5.0. URL: https://cran.r-project.org/package=stringr")
+
+# purrr
+print("Henry, L., & Wickham, H. (2022). purrr: Functional Programming Tools. R package version 1.0.2. URL: https://cran.r-project.org/package=purrr")
+
+# readr
+print("Wickham, H., Hester, J., & Francois, R. (2022). readr: Read Rectangular Text Data. R package version 2.1.4. URL: https://cran.r-project.org/package=readr")
+
+# tibble
+print("Müller, K., & Wickham, H. (2022). tibble: Simple Data Frames. R package version 3.2.1. URL: https://cran.r-project.org/package=tibble")
+
+# tidyverse
+print("Wickham, H., Averick, M., Bryan, J., et al. (2022). tidyverse: Easily Install and Load the 'Tidyverse'. R package version 2.0.0. URL: https://cran.r-project.org/package=tidyverse")
+
+# GGally
+print("Schloerke, B., Crowley, J., Cook, D., et al. (2022). GGally: Extension to 'ggplot2'. R package version 2.1.2. URL: https://cran.r-project.org/package=GGally")
+
+# cluster
+print("Maechler, M., Rousseeuw, P., Struyf, A., et al. (2022). cluster: Cluster Analysis Basics and Extensions. R package version 2.1.4. URL: https://cran.r-project.org/package=cluster")
+
+# factoextra
+print("Kassambara, A., & Mundt, F. (2022). factoextra: Extract and Visualize the Results of Multivariate Data Analyses. R package version 1.0.7. URL: https://cran.r-project.org/package=factoextra")
+
+# DataExplorer
+print("Persson, A. (2022). DataExplorer: Data Exploration and Visualization. R package version 0.8.2. URL: https://cran.r-project.org/package=DataExplorer")
+
+# tidyr
+print("Wickham, H., & Henry, L. (2022). tidyr: Tidy Messy Data. R package version 1.3.0. URL: https://cran.r-project.org/package=tidyr")
+
+# ggplot2
+print("Wickham, H. (2016). ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York. R package version 3.4.3. URL: https://cran.r-project.org/package=ggplot2")
+
+# dplyr
+print("Wickham, H., Francois, R., Henry, L., & Müller, K. (2022). dplyr: A Grammar of Data Manipulation. R package version 1.1.3. URL: https://cran.r-project.org/package=dplyr")
+
+# moments
+print("Komsta, L., & Novomestky, F. (2015). moments: Moments, cumulants, skewness, kurtosis and related tests. R package version 0.14.1. URL: https://cran.r-project.org/package=moments")
+
+# Hospital Dataset
+print("Centers for Medicare and Medicaid Services. (2023). Dataset Title. Retrieved on September 3, 2023, from https://data.cms.gov/provider-data/dataset/77hc-ibv8")
+
+print("Centers for Medicare and Medicaid Services. (2023). Medicare Inpatient Hospitals Provider Summary by Type of Service. Retrieved on September 3, 2023, from https://data.cms.gov/provider-summary-by-type-of-service/medicare-inpatient-hospitals/medicare-inpatient-hospitals-by-provider/data")
+
+print("Centers for Medicare and Medicaid Services. (2023). HCAHPS Dataset. Retrieved on September 3, 2023, from https://data.cms.gov/provider-data/dataset/dgck-syfz")
+
+# Data Science Code of Conduct
+print("Data Science Association. (2023). Code of Conduct for Data Science. Retrieved from https://datascienceassn.org/code-of-conduct.html")
+
+
+```
+
+## END
